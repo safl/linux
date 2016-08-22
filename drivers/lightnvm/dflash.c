@@ -25,6 +25,21 @@ static struct kmem_cache *dflash_rq_cache;
 static DECLARE_RWSEM(dflash_lock);
 extern const struct block_device_operations dflash_fops;
 
+static inline unsigned int dflash_get_pages(struct bio *bio)
+{
+	return  bio->bi_iter.bi_size / dflash_EXPOSED_PAGE_SIZE;
+}
+
+static inline sector_t dflash_get_laddr(struct bio *bio)
+{
+	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
+}
+
+static inline sector_t dflash_get_sector(sector_t laddr)
+{
+	return laddr * NR_PHY_IN_LOG;
+}
+
 static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 					struct nvm_rq *rqd, uint8_t npages)
 {
@@ -66,7 +81,7 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 		rqd->ppa_list = nvm_dev_dma_alloc(dflash->dev, GFP_KERNEL,
 							&rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
-			pr_err("nvm-dflash: can not allocate ppa list\n");
+			pr_err("nvm-dflash: Failed allocating ppa_list\n");
 			return NVM_IO_ERR;
 		}
 
@@ -97,12 +112,15 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 static int dflash_submit_io(struct dflash *dflash, struct bio *bio,
 							struct nvm_rq *rqd)
 {
-	int err;
+	int ret;
 	uint8_t npages = dflash_get_pages(bio);
 
-	err = dflash_setup_rq(dflash, bio, rqd, npages);
-	if (err)
-		return err;
+	ret = dflash_setup_rq(dflash, bio, rqd, npages);
+	if (ret) {
+		if (NVM_IO_DONE!=ret)
+			pr_err("nvm-dflash: failed setup_rq - submit_io\n");
+		return ret;
+	}
 
 	bio_get(bio);
 	rqd->bio = bio;
@@ -118,17 +136,15 @@ static int dflash_submit_io(struct dflash *dflash, struct bio *bio,
 
 		/* Expose flags to the application */
 		if (npages == 2) {
-			pr_info("nvm-dflash: DUAL!\n");
 			rqd->flags |= NVM_IO_DUAL_ACCESS;
 		} else if (npages > 2) {
-			pr_info("nvm-dflash: QUAD\n");
 			rqd->flags |= NVM_IO_QUAD_ACCESS;
 		}
 	}
 
-	err = nvm_submit_io(dflash->dev, rqd);
-	if (err) {
-		pr_err("nvm-dflash: IO submission failed: %d\n", err);
+	ret = nvm_submit_io(dflash->dev, rqd);
+	if (ret) {
+		pr_err("nvm-dflash: IO submission failed: %d\n", ret);
 		return NVM_IO_ERR;
 	}
 
@@ -212,27 +228,18 @@ static void dflash_free(struct dflash *dflash)
 static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 {
 	struct nvm_dev *dev = dflash->dev;
-	struct nvm_lun *lun;
-	struct nvm_block *block;
-
-	struct dflash_lun *rlun;
-
-	unsigned long j;
-	unsigned long i;
-
-	int ret = 0;
+	unsigned long i, j;
 
 	dflash->luns = kcalloc(dflash->nr_luns, sizeof(struct dflash_lun),
 								GFP_KERNEL);
-	if (!dflash->luns)
+	if (!dflash->luns) {
+		pr_err("nvm-dflash: Failed allocating dflash->luns\n");
 		return -ENOMEM;
-
-	dflash->nr_pages = dev->sec_per_lun * dflash->nr_luns;
+	}
 
 	for (i = 0; i < dflash->nr_luns; ++i) {
-		lun = dev->mt->get_lun(dev, lun_begin + i);
-
-		rlun = &dflash->luns[i];
+		struct nvm_lun *lun = dev->mt->get_lun(dev, lun_begin + i);
+		struct dflash_lun *rlun = &dflash->luns[i];
 
 		rlun->dflash = dflash;
 		rlun->parent = lun;
@@ -245,12 +252,12 @@ static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 		rlun->blocks = vzalloc(sizeof(struct nvm_block) *
 							dev->blks_per_lun);
 		if (!rlun->blocks) {
-			ret = -ENOMEM;
-			goto out;
+			pr_err("nvm-dflash: Failed allocating rlun->blocks\n");
+			return -ENOMEM;
 		}
 
 		for (j = 0; j < rlun->nr_free_blocks; ++j) {
-			block = &rlun->blocks[j];
+			struct nvm_block *block = &rlun->blocks[j];
 
 			/* FIXME
 			 * spin_lock_init(&block->lock);
@@ -266,8 +273,7 @@ static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 		}
 	}
 
-out:
-	return ret;
+	return 0;
 }
 
 static int dflash_core_init(struct dflash *dflash)
@@ -277,13 +283,16 @@ static int dflash_core_init(struct dflash *dflash)
 							0, 0, NULL);
 	if (!dflash_rq_cache) {
 		up_write(&dflash_lock);
+		pr_err("nvm-dflash: Failed kmem_cache_create\n");
 		return -ENOMEM;
 	}
 	up_write(&dflash_lock);
 
 	dflash->rq_pool = mempool_create_slab_pool(64, dflash_rq_cache);
-	if (!dflash->rq_pool)
+	if (!dflash->rq_pool) {
+		pr_err("nvm-dflash: Failed mempool_create_slab_pool\n");
 		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -291,7 +300,7 @@ static int dflash_core_init(struct dflash *dflash)
 static struct nvm_tgt_type tt_dflash;
 
 static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
-						int lun_begin, int lun_end)
+			 int lun_begin, int lun_end)
 {
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
@@ -309,6 +318,7 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	dflash->disk = tdisk;
 
 	dflash->nr_luns = lun_end - lun_begin + 1;
+	dflash->nr_pages = dflash->dev->sec_per_lun * dflash->nr_luns;
 
 	ret = dflash_luns_init(dflash, lun_begin, lun_end);
 	if (ret) {
@@ -329,7 +339,7 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
-	pr_info("nvm-dflash: initialized nr_luns(%lu), blocks(%lu), pages(%lu)\n",
+	pr_info("nvm-dflash: nr_luns(%lu), blocks(%lu), pages(%lu)\n",
 		dflash->nr_luns,
 		dflash->nr_luns * dev->blks_per_lun,
 		dflash->nr_luns * dev->sec_per_lun);
@@ -353,48 +363,62 @@ static void dflash_exit(void *private)
  */
 static DEFINE_SPINLOCK(dev_list_lock);
 
+
+/* WIP:
+ *
+ * 1) Implement function to choose lun when passing flag NVM_PROV_RAND_LUN,
+ *    currently lun 0 is chosen.
+ * 2) Remove free block account to an internal function to keep track of
+ *    internal ids?
+ */
 static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 {
 	struct nvm_ioctl_vblock vblock;
 	struct dflash_lun *dflash_lun;
-	struct nvm_dev *dev = dflash->dev;
-	struct nvm_lun *lun;
 	struct nvm_block *block;
+	struct nvm_lun *lun;
 
-	if (copy_from_user(&vblock, arg, sizeof(vblock)))
+	if (copy_from_user(&vblock, arg, sizeof(vblock))) {
+		pr_err("nvm-dflash: failed copy_from_user - get_block\n");
 		return -EFAULT;
+	}
 
-	if (!(vblock.flags & (NVM_PROV_SPEC_LUN | NVM_PROV_RAND_LUN)))
-		return -EINVAL;
-
-	if (vblock.flags & NVM_PROV_SPEC_LUN) {
-		if (vblock.vlun_id >= dflash->nr_luns)
+	switch(vblock.flags) {
+		case NVM_PROV_SPEC_LUN:
+			if (vblock.vlun_id >= dflash->nr_luns) {
+				pr_err("nvm-dflash: invalid lun - get_block\n");
+				return -EINVAL;
+			}
+			break;
+		case NVM_PROV_RAND_LUN:
+			vblock.vlun_id = 0;
+			break;
+		default:
+			pr_err("nvm-dflash: invalid flag - get_block\n");
 			return -EINVAL;
-	} else {
-		/* TODO: Implement function to choose lun */
-		vblock.vlun_id = 0;
 	}
 
 	dflash_lun = &dflash->luns[vblock.vlun_id];
 	lun = dflash_lun->parent;
 
 	block = nvm_get_blk(dflash->dev, dflash_lun->parent, 0);
-	if (!block)
+	if (!block) {
+		pr_err("nvm-dflash: failed nvm_get_blk - get_block\n");
 		return -EFAULT;
+	}
 
-	/* TODO: This should be moved to an internal function
-	 *	 keep track of internal ids?
-	 */
-	dflash_lun->nr_free_blocks--;
+	dflash_lun->nr_free_blocks--;	/* WIP(2) */
 
-	vblock.id = block->id;  /*	Blocks have a global id	*/
-	vblock.bppa = dev->sec_per_blk * vblock.id;
-	vblock.nppas = dev->pgs_per_blk * dev->sec_per_pg;
+	vblock.id = block->id;		/* Blocks have a global id */
+	vblock.bppa = dflash->dev->sec_per_blk * vblock.id;
+	vblock.nppas = dflash->dev->pgs_per_blk * dflash->dev->sec_per_pg;
 
 	nvm_erase_blk(dflash->dev, block);
 
-	if (copy_to_user(arg, &vblock, sizeof(vblock)))
+	if (copy_to_user(arg, &vblock, sizeof(vblock))) {
+		pr_err("nvm-dflash: failed copy_to_user - get_block\n");
 		return -EFAULT;
+	}
 
 	return 0;
 }
@@ -402,27 +426,35 @@ static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 {
 	struct nvm_ioctl_vblock vblock;
-	struct nvm_dev *dev = dflash->dev;
-	struct dflash_lun *dflash_lun;
 	struct nvm_block *block;
 	struct nvm_lun *lun;
 
-	if (copy_from_user(&vblock, arg, sizeof(vblock)))
+	int lun_blk_idx_start;
+	int lun_blk_idx_end;
+
+	if (copy_from_user(&vblock, arg, sizeof(vblock))) {
+		pr_err("nvm-dflash: failed copy_from_user - put_block\n");
 		return -EFAULT;
+	}
 
-	if (vblock.vlun_id >= dflash->nr_luns)
+	if (vblock.vlun_id >= dflash->nr_luns) {
+		pr_err("nvm-dflash: invalid lun - put_block\n");
 		return -EINVAL;
+	}
 
-	dflash_lun = &dflash->luns[vblock.vlun_id];
-	lun = dflash_lun->parent;
-	if (vblock.id <= (lun->id * dev->blks_per_lun) ||
-				vblock.id > ((lun->id + 1) * dev->blks_per_lun))
+	lun = &dflash->luns[vblock.vlun_id]->parent;
+
+	lun_blk_idx_start = lun->id * dflash->dev->blks_per_lun;
+	lun_blk_idx_end =  (lun->id + 1) * dflash->dev->blks_per_lun - 1;
+	if (vblock.id < lun_blk_idx_start || vblock.id > lun_blk_idx_end) {
+		pr_err("nvm-dflash: invalid block id - put_block\n");
 		return -EINVAL;
+	}
 
-	block = &lun->blocks[vblock.id % dev->blks_per_lun];
+	block = &lun->blocks[vblock.id % dflash->dev->blks_per_lun];
 
-	nvm_put_blk(dev, block);
-	dflash_lun->nr_free_blocks++;
+	nvm_put_blk(dflash->dev, block);
+	dflash->luns[vblock.vlun_id]->nr_free_blocks++;
 
 	return 0;
 }
@@ -439,6 +471,7 @@ static int dflash_ioctl(struct block_device *bdev, fmode_t mode,
 	case NVM_BLOCK_PUT:
 		return dflash_ioctl_put_block(dflash, argp);
 	default:
+		pr_debug("nvm-dflash: unknown cmd(0x%x) - dflash_ioctl\n", cmd);
 		return -ENOTTY;
 	}
 }
@@ -451,8 +484,10 @@ static int dflash_check_device(struct block_device *bdev)
 	/* TODO: kref?*/
 	spin_lock(&dev_list_lock);
 	nb = bdev->bd_disk->private_data;
-	if (!nb)
+	if (!nb) {
+		pr_err("nvm-dflash: invalid private_data - check_device\n");
 		ret = -ENXIO;
+	}
 	spin_unlock(&dev_list_lock);
 
 	return ret;

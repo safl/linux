@@ -58,19 +58,4 @@ struct dflash_lun {
 	unsigned long nr_free_blocks;
 };
 
-static inline unsigned int dflash_get_pages(struct bio *bio)
-{
-	return  bio->bi_iter.bi_size / dflash_EXPOSED_PAGE_SIZE;
-}
-
-static inline sector_t dflash_get_laddr(struct bio *bio)
-{
-	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
-}
-
-static inline sector_t dflash_get_sector(sector_t laddr)
-{
-	return laddr * NR_PHY_IN_LOG;
-}
-
 #endif /* DFLASH_H_ */
