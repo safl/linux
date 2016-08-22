@@ -25,27 +25,45 @@ static struct kmem_cache *dflash_rq_cache;
 static DECLARE_RWSEM(dflash_lock);
 extern const struct block_device_operations dflash_fops;
 
-static inline unsigned int dflash_get_pages(struct bio *bio)
+static inline unsigned int _get_npages(struct bio *bio)
 {
 	return  bio->bi_iter.bi_size / dflash_EXPOSED_PAGE_SIZE;
 }
 
-static inline sector_t dflash_get_laddr(struct bio *bio)
+static inline sector_t _get_laddr(struct bio *bio)
 {
 	return bio->bi_iter.bi_sector / NR_PHY_IN_LOG;
 }
 
-static inline sector_t dflash_get_sector(sector_t laddr)
+static void _pr_ppa(sector_t addr, uint8_t npages,
+			      struct ppa_addr ppa)
 {
-	return laddr * NR_PHY_IN_LOG;
+	pr_info("addr(%llu:%u)"
+		", ch(%u)"
+		", lun(%u)"
+		", pl(%u)"
+		", blk(%u)"
+		", pg(%u)"
+		", sec(%u)"
+		", ppa(%llu)"
+		", ppa(0x%llx)\n",
+		(unsigned long long) addr, npages,
+		ppa.g.ch,
+		ppa.g.lun,
+		ppa.g.pl,
+		ppa.g.blk,
+		ppa.g.pg,
+		ppa.g.sec,
+		ppa.ppa,
+		ppa.ppa);
 }
 
 static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
-					struct nvm_rq *rqd, uint8_t npages)
+			   struct nvm_rq *rqd, uint8_t npages)
 {
 	struct nvm_dev *dev = dflash->dev;
 	struct ppa_addr ppa;
-	sector_t laddr = dflash_get_laddr(bio);
+	sector_t laddr = _get_laddr(bio);
 	sector_t ltmp = laddr;
 	struct nvm_lun *lun;
 	int i;
@@ -60,24 +78,12 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 	ppa.g.pl = (laddr % dev->sec_per_pl) / dev->nr_planes;
 	ppa.g.pg = (laddr % dev->sec_per_blk) / (dev->sec_per_pl);
 
-	/* pr_info("device charac - sec_per_blk:%d,blks_per_lun:%d, " */
-	/*	"sec_per_pl:%d, sec_per_pg:%d,nr_planes:%d\n", */
-	/*	dev->sec_per_blk, dev->blks_per_lun, */
-	/*	dev->sec_per_pl, dev->sec_per_pg, dev->nr_planes); */
-
 	/* the first block of a lun is used internally. */
 	/* also block the last block access on partition scans. */
 	if (ppa.g.blk == 0 || (ppa.g.ch == 15 && ppa.g.blk == 1023))
 		return NVM_IO_DONE;
-	/* if (npages == 1) { */
-	/* 	pr_info("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n", */
-	/* 			(unsigned long long) ltmp, npages, */
-	/* 			ppa.g.ch,ppa.g.sec, */
-	/* 			ppa.g.pl,ppa.g.lun, */
-	/* 			ppa.g.pg,ppa.g.blk, */
-	/* 			ppa.ppa,ppa.ppa); */
-	/* } */
 
+	_pr_ppa(laddr, npages, ppa);
 	if (npages > 1) {
 		rqd->ppa_list = nvm_dev_dma_alloc(dflash->dev, GFP_KERNEL,
 							&rqd->dma_ppa_list);
@@ -89,17 +95,12 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 		for (i = 0; i < npages; i++) {
 			BUG_ON(!(laddr + i >= 0 && laddr + i < dflash->nr_pages));
 			rqd->ppa_list[i] = ppa;
-			/* pr_info("addr: %llu[%u]: ch: %u sec: %u pl: %u lun: %u pg: %u blk: %u -> %llu 0x%x\n",
-			 *		(unsigned long long) ltmp, npages,
-			 *		ppa.g.ch,ppa.g.sec,
-			 *		ppa.g.pl,ppa.g.lun,
-			 *		ppa.g.pg,ppa.g.blk,
-			 *		ppa.ppa,ppa.ppa);
-			 */
 			ltmp++;
 			ppa.g.sec = ltmp % dev->sec_per_pg;
 			ppa.g.pl = (ltmp % dev->sec_per_pl) / dev->nr_planes;
 			ppa.g.pg = (ltmp % dev->sec_per_blk) / dev->sec_per_pl;
+
+			_pr_ppa(laddr, npages, ppa);
 		}
 
 		return NVM_IO_OK;
@@ -111,10 +112,10 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 }
 
 static int dflash_submit_io(struct dflash *dflash, struct bio *bio,
-							struct nvm_rq *rqd)
+			    struct nvm_rq *rqd)
 {
 	int ret;
-	uint8_t npages = dflash_get_pages(bio);
+	uint8_t npages = _get_npages(bio);
 
 	ret = dflash_setup_rq(dflash, bio, rqd, npages);
 	if (ret) {
