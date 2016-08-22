@@ -38,24 +38,15 @@
 
 #define NR_PHY_IN_LOG (dflash_EXPOSED_PAGE_SIZE / dflash_SECTOR)
 
-struct dflash_lun;
-
 struct dflash {
 	struct nvm_tgt_instance instance;
-	unsigned long nr_pages;
 	unsigned long nr_luns;
-	struct dflash_lun *luns;
+	struct nvm_lun **luns;
+	unsigned long nr_blocks;
+	unsigned long nr_pages;
 	mempool_t *rq_pool;
 	struct nvm_dev *dev;
 	struct gendisk *disk;
-};
-
-struct dflash_lun {
-	struct dflash *dflash;
-	struct nvm_lun *parent;
-	struct nvm_block *blocks;
-	unsigned long nr_blocks;
-	unsigned long nr_free_blocks;
 };
 
 #endif /* DFLASH_H_ */

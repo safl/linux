@@ -47,13 +47,14 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 	struct ppa_addr ppa;
 	sector_t laddr = dflash_get_laddr(bio);
 	sector_t ltmp = laddr;
-	struct dflash_lun *nlun;
+	struct nvm_lun *lun;
 	int i;
 
-	nlun = &dflash->luns[laddr / dev->sec_per_lun];
+	lun = dflash->luns[laddr / dev->sec_per_lun];
+
 	ppa.ppa = 0;
-	ppa.g.lun = nlun->parent->lun_id;
-	ppa.g.ch = nlun->parent->chnl_id;
+	ppa.g.lun = lun->lun_id;
+	ppa.g.ch = lun->chnl_id;
 	ppa.g.blk = (laddr / dev->sec_per_blk) % dev->blks_per_lun;
 	ppa.g.sec = laddr % dev->sec_per_pg;
 	ppa.g.pl = (laddr % dev->sec_per_pl) / dev->nr_planes;
@@ -227,50 +228,18 @@ static void dflash_free(struct dflash *dflash)
 
 static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 {
-	struct nvm_dev *dev = dflash->dev;
-	unsigned long i, j;
+	unsigned long i;
 
-	dflash->luns = kcalloc(dflash->nr_luns, sizeof(struct dflash_lun),
-								GFP_KERNEL);
+	dflash->luns = kcalloc(dflash->nr_luns, sizeof(*(dflash->luns)),
+			       GFP_KERNEL);
 	if (!dflash->luns) {
 		pr_err("nvm-dflash: Failed allocating dflash->luns\n");
 		return -ENOMEM;
 	}
 
 	for (i = 0; i < dflash->nr_luns; ++i) {
-		struct nvm_lun *lun = dev->mt->get_lun(dev, lun_begin + i);
-		struct dflash_lun *rlun = &dflash->luns[i];
-
-		rlun->dflash = dflash;
-		rlun->parent = lun;
-		rlun->nr_free_blocks = dev->blks_per_lun;
-
-		/*
-		 * FIXME: This allocation is a momentary fix until we fix the
-		 *	  block id issue
-		 */
-		rlun->blocks = vzalloc(sizeof(struct nvm_block) *
-							dev->blks_per_lun);
-		if (!rlun->blocks) {
-			pr_err("nvm-dflash: Failed allocating rlun->blocks\n");
-			return -ENOMEM;
-		}
-
-		for (j = 0; j < rlun->nr_free_blocks; ++j) {
-			struct nvm_block *block = &rlun->blocks[j];
-
-			/* FIXME
-			 * spin_lock_init(&block->lock);
-			 */
-			INIT_LIST_HEAD(&block->list);
-
-			/* FIXME
-			 * bitmap_zero(block->invalid_pages, lun->pgs_per_blk);
-			 * block->next_page = 0;
-			 * block->nr_invalid_pages = 0;
-			 * atomic_set(&block->data_cmnt_size, 0);
-			 */
-		}
+		dflash->luns[i] = dflash->dev->mt->get_lun(dflash->dev,
+							   lun_begin + i);
 	}
 
 	return 0;
@@ -318,7 +287,8 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	dflash->disk = tdisk;
 
 	dflash->nr_luns = lun_end - lun_begin + 1;
-	dflash->nr_pages = dflash->dev->sec_per_lun * dflash->nr_luns;
+	dflash->nr_blocks = dflash->nr_luns * dflash->dev->blks_per_lun;
+	dflash->nr_pages = dflash->nr_luns * dflash->dev->sec_per_lun;
 
 	ret = dflash_luns_init(dflash, lun_begin, lun_end);
 	if (ret) {
@@ -339,10 +309,10 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	blk_queue_logical_block_size(tqueue, queue_physical_block_size(bqueue));
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
-	pr_info("nvm-dflash: nr_luns(%lu), blocks(%lu), pages(%lu)\n",
+	pr_info("nvm-dflash: nr_luns(%lu), nr_blocks(%lu), nr_pages(%lu)\n",
 		dflash->nr_luns,
-		dflash->nr_luns * dev->blks_per_lun,
-		dflash->nr_luns * dev->sec_per_lun);
+		dflash->nr_blocks,
+		dflash->nr_pages);
 
 	return dflash;
 clean:
@@ -374,9 +344,7 @@ static DEFINE_SPINLOCK(dev_list_lock);
 static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 {
 	struct nvm_ioctl_vblock vblock;
-	struct dflash_lun *dflash_lun;
 	struct nvm_block *block;
-	struct nvm_lun *lun;
 
 	if (copy_from_user(&vblock, arg, sizeof(vblock))) {
 		pr_err("nvm-dflash: failed copy_from_user - get_block\n");
@@ -398,16 +366,11 @@ static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 			return -EINVAL;
 	}
 
-	dflash_lun = &dflash->luns[vblock.vlun_id];
-	lun = dflash_lun->parent;
-
-	block = nvm_get_blk(dflash->dev, dflash_lun->parent, 0);
+	block = nvm_get_blk(dflash->dev, dflash->luns[vblock.vlun_id], 0);
 	if (!block) {
 		pr_err("nvm-dflash: failed nvm_get_blk - get_block\n");
 		return -EFAULT;
 	}
-
-	dflash_lun->nr_free_blocks--;	/* WIP(2) */
 
 	vblock.id = block->id;		/* Blocks have a global id */
 	vblock.bppa = dflash->dev->sec_per_blk * vblock.id;
@@ -442,7 +405,7 @@ static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 		return -EINVAL;
 	}
 
-	lun = &dflash->luns[vblock.vlun_id]->parent;
+	lun = dflash->luns[vblock.vlun_id];
 
 	lun_blk_idx_start = lun->id * dflash->dev->blks_per_lun;
 	lun_blk_idx_end =  (lun->id + 1) * dflash->dev->blks_per_lun - 1;
@@ -454,7 +417,6 @@ static int dflash_ioctl_put_block(struct dflash *dflash, void __user *arg)
 	block = &lun->blocks[vblock.id % dflash->dev->blks_per_lun];
 
 	nvm_put_blk(dflash->dev, block);
-	dflash->luns[vblock.vlun_id]->nr_free_blocks++;
 
 	return 0;
 }
