@@ -212,7 +212,7 @@ static sector_t dflash_capacity(void *private)
 	return dflash->nr_pages * NR_PHY_IN_LOG;
 }
 
-static void dflash_core_free(struct dflash *dflash)
+static void dflash_rq_free(struct dflash *dflash)
 {
 	mempool_destroy(dflash->rq_pool);
 }
@@ -225,7 +225,7 @@ static void dflash_luns_free(struct dflash *dflash)
 static void dflash_free(struct dflash *dflash)
 {
 	if (dflash) {
-		dflash_core_free(dflash);
+		dflash_rq_free(dflash);
 		dflash_luns_free(dflash);
 		kfree(dflash);
 	}
@@ -250,23 +250,16 @@ static int dflash_luns_init(struct dflash *dflash, int lun_begin, int lun_end)
 	return 0;
 }
 
-static int dflash_core_init(struct dflash *dflash)
+static int dflash_rq_init(struct dflash *dflash)
 {
 	down_write(&dflash_lock);
-	dflash_rq_cache = kmem_cache_create("dflash_rq", sizeof(struct nvm_rq),
-							0, 0, NULL);
-	if (!dflash_rq_cache) {
-		up_write(&dflash_lock);
-		pr_err("nvm-dflash: Failed kmem_cache_create\n");
-		return -ENOMEM;
-	}
-	up_write(&dflash_lock);
-
 	dflash->rq_pool = mempool_create_slab_pool(64, dflash_rq_cache);
 	if (!dflash->rq_pool) {
+		up_write(&dflash_lock);
 		pr_err("nvm-dflash: Failed mempool_create_slab_pool\n");
 		return -ENOMEM;
 	}
+	up_write(&dflash_lock);
 
 	return 0;
 }
@@ -276,11 +269,12 @@ static struct nvm_tgt_type tt_dflash;
 static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 			 int lun_begin, int lun_end)
 {
+	int ret;
+	struct dflash *dflash;
+
 	struct request_queue *bqueue = dev->q;
 	struct request_queue *tqueue = tdisk->queue;
-	struct dflash *dflash;
-	int ret;
-
+	
 	dflash = kzalloc(sizeof(struct dflash), GFP_KERNEL);
 	if (!dflash) {
 		ret = -ENOMEM;
@@ -301,7 +295,7 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 		goto clean;
 	}
 
-	ret = dflash_core_init(dflash);
+	ret = dflash_rq_init(dflash);
 	if (ret) {
 		pr_err("nvm-dflash: could not initialize core\n");
 		goto clean;
@@ -482,12 +476,20 @@ static struct nvm_tgt_type tt_dflash = {
 
 static int __init dflash_module_init(void)
 {
+	dflash_rq_cache = kmem_cache_create("dflash_rq", sizeof(struct nvm_rq),
+					    0, 0, NULL);
+	if (!dflash_rq_cache) {
+		pr_err("nvm-dflash: Failed kmem_cache_create\n");
+		return -ENOMEM;
+	}
+
 	return nvm_register_tgt_type(&tt_dflash);
 }
 
 static void dflash_module_exit(void)
 {
 	nvm_unregister_tgt_type(&tt_dflash);
+	kmem_cache_destroy(dflash_rq_cache);
 }
 
 module_init(dflash_module_init);
