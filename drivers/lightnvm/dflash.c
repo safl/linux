@@ -21,8 +21,12 @@
 
 #include "dflash.h"
 
-static struct kmem_cache *dflash_rq_cache;
+/*
+ * TODO: move .ioctl to .unlocked_ioctl and implement locking within the module
+ */
 static DECLARE_RWSEM(dflash_lock);
+static struct kmem_cache *dflash_rq_cache;
+static DEFINE_SPINLOCK(dev_list_lock);
 extern const struct block_device_operations dflash_fops;
 
 static inline unsigned int _get_npages(struct bio *bio)
@@ -329,18 +333,11 @@ static void dflash_exit(void *private)
 	dflash_free(dflash);
 }
 
-/*
- * TODO: move .ioctl to .unlocked_ioctl and implement locking within the module
- */
-static DEFINE_SPINLOCK(dev_list_lock);
-
 
 /* WIP:
  *
  * 1) Implement function to choose lun when passing flag NVM_PROV_RAND_LUN,
  *    currently lun 0 is chosen.
- * 2) Remove free block account to an internal function to keep track of
- *    internal ids?
  */
 static int dflash_ioctl_get_block(struct dflash *dflash, void __user *arg)
 {
@@ -444,8 +441,7 @@ static int dflash_check_device(struct block_device *bdev)
 	struct dflash *nb;
 	int ret = 0;
 
-	/* TODO: kref?*/
-	spin_lock(&dev_list_lock);
+	spin_lock(&dev_list_lock);		/* TODO: kref?*/
 	nb = bdev->bd_disk->private_data;
 	if (!nb) {
 		pr_err("nvm-dflash: invalid private_data - check_device\n");
