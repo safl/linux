@@ -42,7 +42,7 @@ static inline sector_t _get_laddr(struct bio *bio)
 static void _pr_ppa(sector_t addr, uint8_t npages,
 			      struct ppa_addr ppa)
 {
-	pr_info("addr(%llu:%u)"
+	pr_debug("addr(%llu:%u)"
 		", ch(%u)"
 		", lun(%u)"
 		", pl(%u)"
@@ -65,32 +65,40 @@ static void _pr_ppa(sector_t addr, uint8_t npages,
 static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 			   struct nvm_rq *rqd, uint8_t npages)
 {
-	struct nvm_dev *dev = dflash->dev;
+	int i;
 	struct ppa_addr ppa;
+
+	struct nvm_dev *dev = dflash->dev;
 	sector_t laddr = _get_laddr(bio);
 	sector_t ltmp = laddr;
-	struct nvm_lun *lun;
-	int i;
+	unsigned int vlun_id = laddr / dev->sec_per_lun;
+	struct nvm_lun *lun = dflash->luns[vlun_id];
 
-	lun = dflash->luns[laddr / dev->sec_per_lun];
+	pr_debug("nvm-dflash: vlun_id(%u), lun_id(%u)\n", vlun_id, lun->lun_id);
 
 	ppa.ppa = 0;
 	ppa.g.lun = lun->lun_id;
 	ppa.g.ch = lun->chnl_id;
 	ppa.g.blk = (laddr / dev->sec_per_blk) % dev->blks_per_lun;
-	ppa.g.sec = laddr % dev->sec_per_pg;
+
 	ppa.g.pl = (laddr % dev->sec_per_pl) / dev->nr_planes;
 	ppa.g.pg = (laddr % dev->sec_per_blk) / (dev->sec_per_pl);
+	ppa.g.sec = laddr % dev->sec_per_pg;
 
 	/* the first block of a lun is used internally. */
 	/* also block the last block access on partition scans. */
-	if (ppa.g.blk == 0 || (ppa.g.ch == 15 && ppa.g.blk == 1023))
+
+	// NOTE: What is this? 15=last channel? 1024=last block?
+	if (ppa.g.blk == 0 || (ppa.g.ch == 15 && ppa.g.blk == 1023)) {
+		pr_debug("nvm-dflash: ignoring blk(%u), ch(%u), blk(%u)",
+			ppa.g.blk, ppa.g.ch, ppa.g.blk);
 		return NVM_IO_DONE;
+	}
 
 	_pr_ppa(laddr, npages, ppa);
 	if (npages > 1) {
 		rqd->ppa_list = nvm_dev_dma_alloc(dflash->dev, GFP_KERNEL,
-							&rqd->dma_ppa_list);
+						  &rqd->dma_ppa_list);
 		if (!rqd->ppa_list) {
 			pr_err("nvm-dflash: Failed allocating ppa_list\n");
 			return NVM_IO_ERR;
@@ -100,9 +108,10 @@ static int dflash_setup_rq(struct dflash *dflash, struct bio *bio,
 			BUG_ON(!(laddr + i >= 0 && laddr + i < dflash->nr_pages));
 			rqd->ppa_list[i] = ppa;
 			ltmp++;
-			ppa.g.sec = ltmp % dev->sec_per_pg;
+
 			ppa.g.pl = (ltmp % dev->sec_per_pl) / dev->nr_planes;
 			ppa.g.pg = (ltmp % dev->sec_per_blk) / dev->sec_per_pl;
+			ppa.g.sec = ltmp % dev->sec_per_pg;
 
 			_pr_ppa(laddr, npages, ppa);
 		}
@@ -285,9 +294,25 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	dflash->dev = dev;
 	dflash->disk = tdisk;
 
+	/* Currently used counts */
 	dflash->nr_luns = lun_end - lun_begin + 1;
 	dflash->nr_blocks = dflash->nr_luns * dflash->dev->blks_per_lun;
 	dflash->nr_pages = dflash->nr_luns * dflash->dev->sec_per_lun;
+
+	/* New counts */
+	dflash->nbytes = dflash->dev->sec_size;
+	dflash->nsectors = dflash->dev->sec_per_pg;
+	dflash->npages = dflash->dev->pgs_per_blk;
+	dflash->nblocks = dflash->dev->blks_per_lun / dflash->dev->nr_planes;
+	dflash->nplanes = dflash->dev->nr_planes;
+	dflash->nluns = lun_end - lun_begin +1;
+
+	dflash->tluns = dflash->nluns;
+	dflash->tplanes = dflash->tluns * dflash->nplanes;
+	dflash->tblocks = dflash->tplanes * dflash->nblocks;
+	dflash->tpages= dflash->tblocks * dflash->npages;
+	dflash->tsectors= dflash->tpages * dflash->nsectors;
+	dflash->tbytes = dflash->tsectors * dflash->nbytes;
 
 	ret = dflash_luns_init(dflash, lun_begin, lun_end);
 	if (ret) {
@@ -309,9 +334,15 @@ static void *dflash_init(struct nvm_dev *dev, struct gendisk *tdisk,
 	blk_queue_max_hw_sectors(tqueue, queue_max_hw_sectors(bqueue));
 
 	pr_info("nvm-dflash: nr_luns(%lu), nr_blocks(%lu), nr_pages(%lu)\n",
-		dflash->nr_luns,
-		dflash->nr_blocks,
-		dflash->nr_pages);
+		dflash->nr_luns, dflash->nr_blocks, dflash->nr_pages);
+	pr_info("nvm-dflash: nbytes(%lu), nsectors(%lu), npages(%lu)",
+		 dflash->nbytes, dflash->nsectors, dflash->npages);
+	pr_info("nvm-dflash: nblocks(%lu), nplanes(%lu), nluns(%lu)",
+		 dflash->nblocks, dflash->nplanes, dflash->nluns);
+	pr_info("nvm-dflash: tbytes(%lu), tsectors(%lu), tpages(%lu)",
+		 dflash->tbytes, dflash->tsectors, dflash->tpages);
+	pr_info("nvm-dflash: tblocks(%lu), tplanes(%lu), tluns(%lu)",
+		 dflash->tblocks, dflash->tplanes, dflash->tluns);
 
 	return dflash;
 clean:

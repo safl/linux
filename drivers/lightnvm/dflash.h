@@ -40,13 +40,28 @@
 
 struct dflash {
 	struct nvm_tgt_instance instance;
-	unsigned long nr_luns;
-	struct nvm_lun **luns;
-	unsigned long nr_blocks;
-	unsigned long nr_pages;
-	mempool_t *rq_pool;
 	struct nvm_dev *dev;
 	struct gendisk *disk;
+	mempool_t *rq_pool;
+	struct nvm_lun **luns;
+
+	unsigned long nr_pages;	/* Currently used counts */
+	unsigned long nr_luns;
+	unsigned long nr_blocks;
+				/* New counts -- per containing entity */
+	unsigned long nbytes;	/* # of bytes per sector */
+	unsigned long nsectors;	/* # of sectors per page */
+	unsigned long npages;	/* # of pages per block */
+	unsigned long nblocks;	/* # of blocks per plane */
+	unsigned long nplanes;	/* # of planes per lun */
+	unsigned long nluns;	/* # of luns reserved for target */
+
+	unsigned long tbytes;	/* New counts -- totals */
+	unsigned long tsectors;
+	unsigned long tblocks;
+	unsigned long tpages;
+	unsigned long tplanes;
+	unsigned long tluns;
 };
 
 #endif /* DFLASH_H_ */
