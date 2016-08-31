@@ -71,6 +71,9 @@ static ssize_t nvm_dev_attr_show(struct device *dev,
 		return scnprintf(page, PAGE_SIZE, "0x%08x\n", grp->mpos);
 	} else if (strcmp(attr->name, "media_capabilities") == 0) {
 		return scnprintf(page, PAGE_SIZE, "0x%08x\n", grp->mccap);
+	} else if (strcmp(attr->name, "max_phys_secs") == 0) {
+		return scnprintf(page, PAGE_SIZE, "%u\n",
+				ndev->ops->max_phys_sect);
 	} else {
 		return scnprintf(page,
 				 PAGE_SIZE,
@@ -107,6 +110,7 @@ static NVM_DEV_ATTR_RO(erase_typ);
 static NVM_DEV_ATTR_RO(erase_max);
 static NVM_DEV_ATTR_RO(multiplane_modes);
 static NVM_DEV_ATTR_RO(media_capabilities);
+static NVM_DEV_ATTR_RO(max_phys_secs);
 
 #define NVM_DEV_ATTR(_name) (dev_attr_##_name##)
 
@@ -136,6 +140,7 @@ static struct attribute *nvm_dev_attrs[] = {
 	&dev_attr_erase_max.attr,
 	&dev_attr_multiplane_modes.attr,
 	&dev_attr_media_capabilities.attr,
+	&dev_attr_max_phys_secs.attr,
 	NULL,
 };
 
