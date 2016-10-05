@@ -594,6 +594,7 @@ static int nvme_nvm_submit_user_io(struct nvm_dev *dev, struct nvm_rq *rqd,
 
 	rqd->error = rq->errors;
 
+	blk_rq_unmap_user(rq->bio);	// memleak fix?
 	kfree(rq->cmd);
 	blk_mq_free_request(rq);
 
