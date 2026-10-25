@@ -30,7 +30,10 @@ case "$ko" in
 *) cp "$ko" /tmp/amdgpu.ko ;;
 esac
 # The memory partition setup was compiled in, not left behind its guard
-nm /tmp/amdgpu.ko | grep -q soc_v1_0_get_xcp_mem_id ||
+# Captured first: grep -q stops at the first match, and under pipefail the
+# SIGPIPE that leaves nm with would read as the symbol missing.
+syms=$(nm /tmp/amdgpu.ko)
+grep -q ' soc_v1_0_get_xcp_mem_id$' <<<"$syms" ||
 	{ echo "test-amdgpu-dkms.sh: soc_v1_0_get_xcp_mem_id is not in the module" >&2; exit 1; }
 if compgen -G "/lib/modules/$other/updates/dkms/amdgpu*" >/dev/null; then
 	echo "test-amdgpu-dkms.sh: built for $other, outside the series" >&2
