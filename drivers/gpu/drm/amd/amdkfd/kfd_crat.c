@@ -1738,6 +1738,10 @@ int kfd_get_gpu_cache_info(struct kfd_node *kdev, struct kfd_gpu_cache_info **pc
 				kfd_fill_gpu_cache_info_from_gfx_config(kdev->kfd,
 									cache_line_size_missing,
 									*pcache_info);
+			if (!num_of_cache_types) {
+				*pcache_info = dummy_cache_info;
+				num_of_cache_types = ARRAY_SIZE(dummy_cache_info);
+			}
 			break;
 		default:
 			*pcache_info = dummy_cache_info;
