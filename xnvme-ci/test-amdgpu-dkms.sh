@@ -40,7 +40,7 @@ if compgen -G "/lib/modules/$other/updates/dkms/amdgpu*" >/dev/null; then
 	exit 1
 fi
 apt-get -qy purge "$(dpkg-deb -f "$deb" Package)" >/dev/null
-if dkms status | grep -q amdgpu-xnvme; then
+if grep -q amdgpu-xnvme <<<"$(dkms status)"; then
 	echo "test-amdgpu-dkms.sh: purge left the DKMS module registered" >&2
 	exit 1
 fi
