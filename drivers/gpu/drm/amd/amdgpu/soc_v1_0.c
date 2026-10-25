@@ -288,6 +288,8 @@ static int soc_v1_0_common_early_init(struct amdgpu_ip_block *ip_block)
 
 	adev->asic_funcs = &soc_v1_0_asic_funcs;
 
+	adev->nbio.funcs->set_reg_remap(adev);
+
 	adev->rev_id = amdgpu_device_get_rev_id(adev);
 	adev->external_rev_id = 0xff;
 
