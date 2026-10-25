@@ -1,0 +1,14 @@
+# Where the work runs: here, as root on Ubuntu 26.10, unless a
+# [cijoe.transport.<name>] section names a host to run it on instead.
+#
+# The environment says what to build: XNVME_CI_SRC is this tree on that host,
+# XNVME_CI_OUT where the debs go, and XNVME_CI_N the release number, the <n>
+# of a tag xnvme-ci/v7.3-<n>, or 0 for a build of the branch.
+[xnvme_ci]
+src = "{{ local.env.XNVME_CI_SRC }}"
+out = "{{ local.env.XNVME_CI_OUT }}"
+n = "{{ local.env.XNVME_CI_N }}"
+
+# The kernel the guests run otherwise: its config is ours, and the DKMS
+# package is checked against its headers as well as ours
+ubuntu_kernel = "7.3.0-9-generic"

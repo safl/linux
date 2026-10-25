@@ -1,0 +1,34 @@
+---
+doc: |
+  Build and check the kernel-side debs of xNVMe's test images
+
+  Packages this tree's amdgpu, with the GC 12.1 fixes, as DKMS and checks that
+  it builds for Ubuntu's kernel, then builds this tree as the guests' kernel,
+  7.3.0-xnvme<n>, checks its debs, and checks the DKMS package builds for it
+  too. The debs land in 'xnvme_ci.out', which a release publishes as is.
+
+steps:
+- name: deps
+  run: |
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -qy update
+    apt-get -qy install --no-install-recommends bc bison build-essential ca-certificates cpio debhelper dpkg-dev flex gawk git kmod libdw-dev libelf-dev libssl-dev openssl perl python3 rsync xz-utils zstd
+
+- name: amdgpu_dkms_package
+  uses: amdgpu_dkms_package
+
+- name: amdgpu_dkms_check_ubuntu
+  uses: amdgpu_dkms_check
+  with:
+    kernel: ubuntu
+
+- name: kernel_build
+  uses: kernel_build
+
+- name: kernel_check
+  uses: kernel_check
+
+- name: amdgpu_dkms_check_xnvme
+  uses: amdgpu_dkms_check
+  with:
+    kernel: xnvme

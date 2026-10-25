@@ -1,6 +1,9 @@
-# The kernel-side debs xNVMe's test images are assembled from: today amdgpu
-# with the GC 12.1 fixes as DKMS, for the guest. A tag xnvme-ci/v<series>-<n>
-# publishes them as a release.
+# The kernel-side debs xNVMe's test images are assembled from: this tree as the
+# guests' kernel, 7.3.0-xnvme<n>, and amdgpu with the GC 12.1 fixes as DKMS,
+# checked against both that kernel and Ubuntu's. cijoe does the work, as
+# xnvme-ci/cijoe/workflows/artifacts.yaml, which runs the same way outside
+# GitHub; this only runs it and keeps its report. A tag
+# xnvme-ci/v<series>-<n> publishes the debs as a release.
 #
 # Copyright (c) Simon A. F. Lund <os@safl.dk>
 # SPDX-License-Identifier: GPL-2.0
@@ -20,69 +23,60 @@ defaults:
   run:
     shell: bash
 
-env:
-  # The guest's kernel, whose headers test the DKMS build
-  TEST_KVER: 7.3.0-9-generic
-
 jobs:
-  build:
+  # The kernel takes hours on four cores, and its tree more room than the
+  # workspace has, so it is built on /mnt
+  artifacts:
     runs-on: ubuntu-24.04
-    container: ubuntu:26.10
+    container:
+      image: ubuntu:26.10
+      options: -v /mnt:/mnt
+    timeout-minutes: 360
     steps:
-    - run: apt-get -qy update && apt-get -qy install git
+    - run: apt-get -qy update && apt-get -qy install git pipx
     - uses: actions/checkout@v6
       with:
         fetch-depth: 50
-        filter: blob:none
-        sparse-checkout: |
-          /Makefile
-          /COPYING
-          /drivers/gpu/drm/amd/
-          /xnvme-ci/
-        sparse-checkout-cone-mode: false
-    - id: v
+        path: linux
+    - id: n
       env:
         REF_TYPE: ${{ github.ref_type }}
         REF_NAME: ${{ github.ref_name }}
       run: |
-        git config --global --add safe.directory "$PWD"
-        base=$(awk -F' = ' '$1=="VERSION"{v=$2} $1=="PATCHLEVEL"{p=$2} $1=="SUBLEVEL"{s=$2} END{print v"."p"."s}' Makefile)
         if [ "$REF_TYPE" = tag ]; then
           tag=${REF_NAME#xnvme-ci/v}
-          [ "${tag%-*}" = "$(echo "$base" | cut -d. -f1-2)" ] || { echo "::error::tag $REF_NAME is not for $base"; exit 1; }
-          deb="$base+xnvme${tag##*-}"
+          [ "${tag%-*}" = 7.3 ] || { echo "::error::tag $REF_NAME is not for 7.3"; exit 1; }
+          echo "n=${tag##*-}"
         else
-          deb="$base+xnvme0~g$(git rev-parse --short HEAD)"
-        fi
-        echo "deb=$deb" >> "$GITHUB_OUTPUT"
-        echo "$deb"
-    - run: bash xnvme-ci/build-amdgpu-dkms.sh out "${{ steps.v.outputs.deb }}"
+          echo "n=0"
+        fi >> "$GITHUB_OUTPUT"
+    - name: cijoe, artifacts.yaml
+      env:
+        XNVME_CI_SRC: /mnt/linux
+        XNVME_CI_OUT: /mnt/debs
+        XNVME_CI_N: ${{ steps.n.outputs.n }}
+      run: |
+        git config --global --add safe.directory '*'
+        mv linux /mnt/linux
+        pipx install --include-deps /mnt/linux/xnvme-ci/cijoe
+        cd /mnt/linux/xnvme-ci/cijoe
+        ~/.local/bin/cijoe workflows/artifacts.yaml --config configs/default.toml \
+          --monitor --output "$GITHUB_WORKSPACE/cijoe-output"
+    - uses: actions/upload-artifact@v6.0.0
+      if: always()
+      with:
+        name: cijoe-report
+        path: cijoe-output/report.html
+        if-no-files-found: warn
     - uses: actions/upload-artifact@v6.0.0
       with:
         name: debs
-        path: out/*.deb
+        path: /mnt/debs/*.deb
         if-no-files-found: error
-
-  test:
-    needs: build
-    runs-on: ubuntu-24.04
-    container: ubuntu:26.10
-    timeout-minutes: 120
-    steps:
-    - run: apt-get -qy update && apt-get -qy install git
-    - uses: actions/checkout@v6
-      with:
-        sparse-checkout: xnvme-ci
-        filter: blob:none
-    - uses: actions/download-artifact@v7.0.0
-      with:
-        name: debs
-        path: debs
-    - run: bash xnvme-ci/test-amdgpu-dkms.sh debs/amdgpu-xnvme-*-dkms_*.deb "$TEST_KVER"
 
   release:
     if: github.ref_type == 'tag'
-    needs: test
+    needs: artifacts
     runs-on: ubuntu-24.04
     permissions:
       contents: write
