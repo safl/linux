@@ -47,7 +47,10 @@ CONF
 
 stage=$work/stage
 install -D -m 0644 "$tree/COPYING" "$stage/usr/share/doc/$pkg/copyright"
-git -C "$tree" log --format='%h %s' "v$series..HEAD" -- drivers/gpu/drm/amd \
+# The release commit rather than its tag, which a fork's clone may not carry
+release=$(git -C "$tree" log -1 --format=%H --grep="^Linux $series\$" HEAD)
+[ -n "$release" ]
+git -C "$tree" log --format='%h %s' "$release..HEAD" -- drivers/gpu/drm/amd \
 	>"$stage/usr/share/doc/$pkg/changes"
 mkdir -p "$stage/DEBIAN"
 cat >"$stage/DEBIAN/control" <<CONTROL
